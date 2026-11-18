@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>لوحة الإدارة — الحجوزات</title>
+  <meta name="robots" content="noindex,nofollow">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🛡️ لوحة الإدارة</h1>
+    <p class="subtitle">إدارة حجوزات المعرض — السبت 12/12/2026</p>
+  </header>
+
+  <!-- رسائل الحالة -->
+  <div id="global-msg"></div>
+
+  <!-- قسم الدخول -->
+  <div class="admin-card" id="login-section">
+    <div class="form-group">
+      <label for="admin-pass">كلمة السر</label>
+      <input class="form-control" type="password" id="admin-pass" autocomplete="current-password" placeholder="أدخل كلمة سر الإدارة">
+    </div>
+    <button class="btn btn-primary" id="login-btn" type="button" style="width:100%">🔑 دخول</button>
+  </div>
+
+  <!-- لوحة التحكم -->
+  <section id="dashboard" hidden>
+    <div class="admin-toolbar">
+      <div class="stats-summary" id="stats-text">عدد الحجوزات الكلي: —</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" id="refresh-btn" type="button">🔄 تحديث</button>
+        <button class="btn btn-secondary btn-sm" id="csv-btn" type="button">📥 تنزيل CSV</button>
+      </div>
+    </div>
+    <div id="booth-sections"></div>
+  </section>
+</div>
+
+<footer>
+  <small>© 2026 معرض الفنون &nbsp;|&nbsp; لوحة إدارة خاصة</small>
+</footer>
+
+<script src="config.js"></script>
+<script>
+// ===================================================================
+// لوحة الإدارة — المنطق الرئيسي
+// ===================================================================
+
+const BOOTH_NAMES = {
+  b1: "م. وسام مرعي",
+  b2: "د. موسى صالح",
+  b3: "أ. خضر عباسي",
+  b4: "أ. أحمد غباري",
+  b5: "أ. وائل عياد",
+  b6: "أ. لجين سيوري",
+  b7: "ASEZA"
+};
+
+const $ = id => document.getElementById(id);
+let adminPw  = "";
+let allData  = [];
+let autoTimer = null;
+
+// --- تسجيل الدخول ---
+$("login-btn").addEventListener("click", doLogin);
+$("admin-pass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+
+async function doLogin() {
+  const pw = $("admin-pass").value;
+  if (!pw) return;
+
+  if (!CONFIG.BACKEND_URL || CONFIG.BACKEND_URL.includes("PASTE_")) {
+    showMsg("⚠️ رابط الخادم غير مضبوط. افتح ملف <code>config.js</code> وأضف الرابط.", "error");
+    return;
+  }
+
+  $("login-btn").disabled = true;
+  $("login-btn").textContent = "⏳ جارٍ التحقق…";
+
+  try {
+    const data = await callApi("adminList", pw);
+    if (!data.ok) {
+      showMsg("❌ كلمة السر غير صحيحة. حاول مجددًا.", "error");
+    } else {
+      adminPw = pw;
+      $("admin-pass").value = "";
+      $("login-section").hidden = true;
+      $("dashboard").hidden = false;
+      clearMsg();
+      allData = data.rows || [];
+      renderDashboard();
+      startAutoRefresh();
+    }
+  } catch (err) {
+    showMsg("❌ تعذّر الاتصال بالخادم. تحقق من رابط الخادم واتصالك بالإنترنت.", "error");
+  } finally {
+    $("login-btn").disabled = false;
+    $("login-btn").textContent = "🔑 دخول";
+  }
+}
+
+// --- جلب البيانات ---
+async function fetchData() {
+  const data = await callApi("adminList", adminPw);
+  if (!data.ok) {
+    showMsg("⚠️ انتهت الجلسة أو كلمة السر غير صحيحة. أعد تحميل الصفحة.", "error");
+    $("dashboard").hidden = true;
+    $("login-section").hidden = false;
+    adminPw = "";
+    stopAutoRefresh();
+    return;
+  }
+  allData = data.rows || [];
+  clearMsg();
+  renderDashboard();
+}
+
+// --- رسم لوحة البيانات ---
+function renderDashboard() {
+  const container = $("booth-sections");
+  container.innerHTML = "";
+
+  const byBooth = {};
+  Object.keys(BOOTH_NAMES).forEach(id => byBooth[id] = []);
+  allData.forEach(row => {
+    if (byBooth[row.booth] !== undefined) byBooth[row.booth].push(row);
+    else {
+      // بحث بالاسم (احتياطي)
+      const bid = Object.entries(BOOTH_NAMES).find(([,v]) => v === row.booth)?.[0];
+      if (bid) byBooth[bid].push(row);
+    }
+  });
+
+  let total = 0;
+  Object.entries(BOOTH_NAMES).forEach(([bid, bname]) => {
+    const rows = byBooth[bid] || [];
+    total += rows.length;
+
+    const section = document.createElement("div");
+    section.className = "booth-section";
+
+    const header = document.createElement("div");
+    header.className = "booth-section-header";
+    header.innerHTML = `<span>${bname}</span><span class="booth-count-badge">${rows.length} حجز</span>`;
+    section.appendChild(header);
+
+    if (rows.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = "لا توجد حجوزات حتى الآن.";
+      section.appendChild(empty);
+    } else {
+      const tableWrapper = document.createElement("div");
+      tableWrapper.className = "table-responsive";
+      const table = document.createElement("table");
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>الموعد</th>
+            <th>الاسم</th>
+            <th>الهاتف</th>
+            <th>إلغاء</th>
+          </tr>
+        </thead>
+      `;
+      const tbody = document.createElement("tbody");
+      rows.forEach(row => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td dir="ltr" style="text-align:right">${esc(row.slot)}</td>
+          <td>${esc(row.name)}</td>
+          <td dir="ltr" style="text-align:right">${esc(row.phone)}</td>
+          <td></td>
+        `;
+        const cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-danger btn-sm";
+        cancelBtn.textContent = "إلغاء";
+        cancelBtn.addEventListener("click", async () => {
+          if (!confirm(`إلغاء حجز "${row.name}" في ${row.slot}؟`)) return;
+          cancelBtn.disabled = true;
+          cancelBtn.textContent = "⏳";
+          try {
+            const res = await callApi("adminCancel", adminPw, row.key);
+            if (res.ok) await fetchData();
+            else showMsg("⚠️ تعذّر الإلغاء.", "error");
+          } catch (e) {
+            showMsg("❌ خطأ في الاتصال بالخادم.", "error");
+          }
+        });
+        tr.querySelector("td:last-child").appendChild(cancelBtn);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      tableWrapper.appendChild(table);
+      section.appendChild(tableWrapper);
+    }
+    container.appendChild(section);
+  });
+
+  $("stats-text").textContent = `عدد الحجوزات الكلي: ${total}`;
+}
+
+// --- التحديث التلقائي ---
+function startAutoRefresh() {
+  autoTimer = setInterval(() => {
+    if (!document.hidden && adminPw) fetchData();
+  }, 15000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && adminPw) fetchData();
+  });
+}
+
+function stopAutoRefresh() {
+  if (autoTimer) clearInterval(autoTimer);
+}
+
+$("refresh-btn").addEventListener("click", fetchData);
+
+// --- تنزيل CSV ---
+$("csv-btn").addEventListener("click", () => {
+  const q = v => '"' + String(v).replace(/"/g, '""') + '"';
+  const header = ["البوث", "الموعد", "الاسم", "الهاتف"];
+  const csvRows = [header.map(q).join(",")];
+  allData.forEach(row => {
+    csvRows.push([row.booth, row.slot, row.name, row.phone].map(q).join(","));
+  });
+  const csv = "\uFEFF" + csvRows.join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  a.download = "bookings_" + new Date().toISOString().slice(0,10) + ".csv";
+  a.click();
+});
+
+// --- مساعد API ---
+async function callApi(action, pw, key) {
+  const res = await fetch(CONFIG.BACKEND_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify({ action, pw, key })
+  });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+// --- الرسائل ---
+function showMsg(html, type = "error") {
+  $("global-msg").innerHTML = `<div class="alert alert-${type}">${html}</div>`;
+}
+
+function clearMsg() {
+  $("global-msg").innerHTML = "";
+}
+
+function esc(str) {
+  return String(str ?? "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+</script>
+</body>
+</html>

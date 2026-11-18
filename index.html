@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>موعد زيارة بوث — المعرض 2026</title>
+  <meta name="description" content="احجز موعد زيارة بوث في المعرض، السبت 12 ديسمبر 2026">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🎪 موعد زيارة بوث</h1>
+    <p class="subtitle">المعرض — السبت 12 ديسمبر 2026، من 10:30 صباحًا حتى 5:30 مساءً (بتوقيت عمّان)</p>
+    <span class="badge-info">اختر البوث ثم الوقت المناسب لك</span>
+  </header>
+
+  <!-- رسائل الحالة -->
+  <div id="global-msg"></div>
+
+  <!-- رسالة تأكيد الحجز -->
+  <div id="booking-confirm"></div>
+
+  <!-- تبويبات البوثات -->
+  <div class="tabs-wrapper">
+    <div class="tabs" id="tabs" role="tablist" aria-label="البوثات المتاحة"></div>
+  </div>
+
+  <!-- مؤشر التحميل -->
+  <div id="loading-status" class="alert alert-warning" style="display:none" role="status">
+    ⏳ جارٍ تحميل المواعيد…
+  </div>
+
+  <!-- شبكة المواعيد -->
+  <div id="slots-grid" class="slots-grid" role="list" aria-label="قائمة المواعيد المتاحة"></div>
+</div>
+
+<!-- نافذة الحجز -->
+<dialog id="booking-dialog" aria-modal="true" aria-labelledby="dialog-title">
+  <div class="dialog-header">
+    <h3 id="dialog-title">تأكيد الحجز</h3>
+    <div class="dialog-slot-info" id="dialog-slot-info"></div>
+  </div>
+  <div class="form-group">
+    <label for="visitor-name">الاسم الكامل</label>
+    <input class="form-control" type="text" id="visitor-name" autocomplete="name" placeholder="مثال: محمد أحمد">
+  </div>
+  <div class="form-group">
+    <label for="visitor-phone">رقم الهاتف</label>
+    <input class="form-control" type="tel" id="visitor-phone" inputmode="tel" autocomplete="tel" dir="ltr" placeholder="+962799000000">
+  </div>
+  <div id="dialog-error" role="alert"></div>
+  <div class="dialog-actions">
+    <button class="btn btn-secondary" id="dialog-cancel" type="button">إلغاء</button>
+    <button class="btn btn-primary" id="dialog-confirm" type="button">✅ تأكيد الحجز</button>
+  </div>
+</dialog>
+
+<footer>
+  <small>© 2026 معرض الفنون &nbsp;|&nbsp; جميع الحقوق محفوظة</small>
+</footer>
+
+<script src="config.js"></script>
+<script>
+// ===================================================================
+// حجز المواعيد — المنطق الرئيسي
+// ===================================================================
+
+const BOOTHS = [
+  { id: "b1", name: "م. وسام مرعي" },
+  { id: "b2", name: "د. موسى صالح" },
+  { id: "b3", name: "أ. خضر عباسي" },
+  { id: "b4", name: "أ. أحمد غباري" },
+  { id: "b5", name: "أ. وائل عياد" },
+  { id: "b6", name: "أ. لجين سيوري" },
+  { id: "b7", name: "ASEZA" }
+];
+
+const SLOTS = [
+  "10:30–10:45","10:50–11:05","11:10–11:25","11:30–11:45","11:50–12:05",
+  "12:10–12:25","12:30–12:45","12:50–1:05","1:10–1:25",
+  "BREAK",
+  "1:40–1:55","2:00–2:15","2:20–2:35","2:40–2:55","3:00–3:15",
+  "3:20–3:35","3:40–3:55","4:00–4:15","4:20–4:35","4:40–4:55","5:00–5:15"
+];
+
+let activeBooth  = "b1";
+let takenKeys    = {};
+let apiReady     = false;
+let selectedSlot = null;
+
+const $ = id => document.getElementById(id);
+const boothName = id => BOOTHS.find(b => b.id === id).name;
+const slotKey   = (booth, idx) => booth + "_s" + idx;
+
+// --- تهيئة التبويبات ---
+function initTabs() {
+  const container = $("tabs");
+  BOOTHS.forEach(({ id, name }) => {
+    const btn = document.createElement("button");
+    btn.className = "tab-btn" + (id === activeBooth ? " active" : "");
+    btn.textContent = name;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", id === activeBooth ? "true" : "false");
+    btn.addEventListener("click", () => {
+      activeBooth = id;
+      document.querySelectorAll(".tab-btn").forEach(b => {
+        b.classList.remove("active");
+        b.setAttribute("aria-selected", "false");
+      });
+      btn.classList.add("active");
+      btn.setAttribute("aria-selected", "true");
+      renderGrid();
+    });
+    container.appendChild(btn);
+  });
+}
+
+// --- رسم شبكة المواعيد ---
+function renderGrid() {
+  const grid = $("slots-grid");
+  grid.innerHTML = "";
+
+  SLOTS.forEach((slot, idx) => {
+    if (slot === "BREAK") {
+      const div = document.createElement("div");
+      div.className = "break-card";
+      div.setAttribute("role", "separator");
+      div.textContent = "☕ استراحة للجميع من 1:25 إلى 1:40";
+      grid.appendChild(div);
+      return;
+    }
+
+    const isTaken = !!takenKeys[slotKey(activeBooth, idx)];
+    const btn = document.createElement("button");
+    btn.className = "slot-card";
+    btn.disabled = isTaken || !apiReady;
+    btn.setAttribute("role", "listitem");
+    btn.setAttribute("aria-label", slot + (isTaken ? " — محجوز" : " — متاح"));
+
+    btn.innerHTML = `
+      <span class="time">${slot}</span>
+      <span class="status-label">${isTaken ? "محجوز" : "متاح"}</span>
+    `;
+
+    if (!isTaken && apiReady) {
+      btn.addEventListener("click", () => openDialog(idx));
+    }
+
+    grid.appendChild(btn);
+  });
+}
+
+// --- تحميل الحجوزات من الخادم ---
+async function loadSlots() {
+  if (!CONFIG.BACKEND_URL || CONFIG.BACKEND_URL.includes("PASTE_")) {
+    showGlobalError("⚠️ الرابط لم يُضبط بعد. افتح ملف <code>config.js</code> وضع رابط Google Apps Script في <code>BACKEND_URL</code>.");
+    return;
+  }
+
+  try {
+    const res = await fetch(CONFIG.BACKEND_URL + "?action=taken", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    takenKeys = {};
+    (data.taken || []).forEach(k => takenKeys[k] = 1);
+    apiReady = true;
+    $("loading-status").style.display = "none";
+    clearGlobalError();
+    renderGrid();
+  } catch (err) {
+    showGlobalError("❌ تعذّر الاتصال بالخادم. يرجى التحقق من الاتصال بالإنترنت أو صحة رابط الخادم.");
+    $("loading-status").style.display = "none";
+  }
+}
+
+// --- فتح نافذة الحجز ---
+async function openDialog(idx) {
+  // فحص آني قبل الفتح
+  await loadSlots();
+  if (takenKeys[slotKey(activeBooth, idx)]) {
+    showGlobalError("❌ هذا الموعد حُجز للتو! اختر وقتًا آخر.");
+    return;
+  }
+  clearGlobalError();
+  selectedSlot = idx;
+  $("dialog-slot-info").textContent = boothName(activeBooth) + " — " + SLOTS[idx];
+  $("dialog-error").textContent = "";
+  $("dialog-error").className = "";
+  $("visitor-name").value = "";
+  $("visitor-phone").value = "";
+  $("booking-dialog").showModal();
+}
+
+// --- تأكيد الحجز ---
+$("dialog-confirm").addEventListener("click", async () => {
+  const name  = $("visitor-name").value.trim();
+  const phone = $("visitor-phone").value.trim();
+  const errEl = $("dialog-error");
+
+  if (name.length < 2) {
+    errEl.textContent = "⚠️ الرجاء إدخال الاسم (حرفان على الأقل).";
+    errEl.className = "alert alert-error";
+    return;
+  }
+  if (!/^[0-9+\s\-]{7,16}$/.test(phone)) {
+    errEl.textContent = "⚠️ رقم الهاتف غير صالح. مثال: +962799000000";
+    errEl.className = "alert alert-error";
+    return;
+  }
+
+  const booth = activeBooth;
+  const idx   = selectedSlot;
+
+  errEl.textContent = "";
+  $("dialog-confirm").disabled = true;
+  $("dialog-confirm").textContent = "⏳ جارٍ الحجز…";
+
+  try {
+    const res = await fetch(CONFIG.BACKEND_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ booth, slot: idx, name, phone })
+    });
+
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+
+    if (data.ok) {
+      $("booking-dialog").close();
+      showBookingSuccess(boothName(booth), SLOTS[idx]);
+      await loadSlots();
+    } else if (data.error === "taken") {
+      errEl.textContent = "❌ عذرًا، تم حجز هذا الوقت للتو من شخص آخر. اختر وقتًا آخر.";
+      errEl.className = "alert alert-error";
+      await loadSlots();
+    } else {
+      errEl.textContent = "❌ تعذّر الحجز. تحقق من بياناتك وأعد المحاولة.";
+      errEl.className = "alert alert-error";
+    }
+  } catch (err) {
+    errEl.textContent = "❌ خطأ في الاتصال بالخادم. تحقق من اتصالك بالإنترنت.";
+    errEl.className = "alert alert-error";
+  } finally {
+    $("dialog-confirm").disabled = false;
+    $("dialog-confirm").textContent = "✅ تأكيد الحجز";
+  }
+});
+
+$("dialog-cancel").addEventListener("click", () => $("booking-dialog").close());
+$("booking-dialog").addEventListener("cancel", () => $("booking-dialog").close());
+
+// --- الرسائل ---
+function showGlobalError(html) {
+  const el = $("global-msg");
+  el.innerHTML = `<div class="alert alert-error">${html}</div>`;
+}
+
+function clearGlobalError() {
+  $("global-msg").innerHTML = "";
+}
+
+function showBookingSuccess(booth, time) {
+  const el = $("booking-confirm");
+  el.innerHTML = `<div class="alert alert-success">🎉 تم تأكيد حجزك بنجاح!<br><strong>${booth}</strong> — <strong>${time}</strong><br><small>السبت 12/12/2026، بتوقيت عمّان</small></div>`;
+  el.scrollIntoView({ behavior: "smooth" });
+}
+
+// --- التهيئة والتحديث التلقائي ---
+function init() {
+  initTabs();
+  $("loading-status").style.display = "";
+  loadSlots();
+  // تحديث كل 5 ثوانٍ حين تكون الصفحة مرئية والنافذة مغلقة
+  setInterval(() => {
+    if (!document.hidden && !$("booking-dialog").open) loadSlots();
+  }, 5000);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) loadSlots();
+  });
+}
+
+init();
+</script>
+</body>
+</html>
